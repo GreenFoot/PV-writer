@@ -1,0 +1,27 @@
+# Secrets & user config
+config.json
+.claude/
+
+# User data — meetings and logs
+meetings/
+*.log*
+
+# Reference PVs (contain names of private individuals)
+examples/
+
+# Virtual env / build artifacts
+.venv/
+build/
+dist/
+*.spec
+!pv_writer.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS artifacts
+.DS_Store
+nul
