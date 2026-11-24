@@ -14,6 +14,7 @@ Folder layout (``<data>/meetings/AAAAMMJJ_HHMM_<slug>/``):
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
 
@@ -26,6 +27,8 @@ NOTES_FILE = "notes.html"
 TRANSCRIPT_FILE = "transcript.txt"
 EXTRACTION_FILE = "extraction.json"
 PV_FILE = "pv.json"
+# Word exports: "20251124_pv_v3.docx" (older ones have no date prefix)
+_DOCX_VERSION = re.compile(r"(?:\d{8}_)?pv_v(\d+)\.docx")
 
 
 @dataclass
@@ -40,9 +43,10 @@ class Meeting:
         agenda_text: Agenda as an indented list (see ``agenda.parse_agenda``).
         glossary: Names, acronyms and terms with their correct spelling.
         previous_pv: File name (inside the folder) of the previous PV, or "".
+        slides: File name (inside the folder) of the slides shown during the meeting, or "".
         sources: Audio/transcript file names (inside the folder), in processing order.
         recorded_seconds: Total recorded audio duration, used to place untimed text.
-        docx_versions: Exported Word files, oldest first.
+        docx_versions: Exported Word files (``YYYYMMDD_pv_vN.docx``), oldest first.
         created: Creation timestamp (ISO).
     """
 
@@ -53,6 +57,7 @@ class Meeting:
     agenda_text: str = ""
     glossary: list[str] = field(default_factory=list)
     previous_pv: str = ""
+    slides: str = ""
     sources: list[str] = field(default_factory=list)
     recorded_seconds: float = 0.0
     docx_versions: list[str] = field(default_factory=list)
@@ -89,11 +94,23 @@ class Meeting:
         self.sources = [os.path.relpath(p, self.folder) for p in abs_paths]
 
     def next_docx_name(self) -> str:
-        """Return the file name for the next Word export (``pv_vN.docx``)."""
-        n = len(self.docx_versions) + 1
-        while os.path.exists(self.path(f"pv_v{n}.docx")):
+        """Return the file name for the next Word export, ``YYYYMMDD_pv_vN.docx``.
+
+        The date is the meeting date. The number follows the highest version ever exported,
+        even when older files were deleted, so a new export never looks older than an
+        existing one.
+        """
+        names = list(self.docx_versions)
+        if os.path.isdir(self.folder):
+            names += os.listdir(self.folder)
+        numbers = [int(m.group(1)) for m in (_DOCX_VERSION.fullmatch(n) for n in names) if m]
+        n = max(numbers, default=0) + 1
+        while os.path.exists(self.path(self._docx_name(n))):
             n += 1
-        return f"pv_v{n}.docx"
+        return self._docx_name(n)
+
+    def _docx_name(self, number: int) -> str:
+        return f"{self.date.replace('-', '')}_pv_v{number}.docx"
 
     # ── Display ───────────────────────────────────────────
 
@@ -133,7 +150,12 @@ class Meeting:
         with open(os.path.join(folder, MEETING_FILE), "r", encoding="utf-8") as f:
             data = json.load(f)
         known = {k: v for k, v in data.items() if k in {f.name for f in fields(cls)} and k != "folder"}
-        return cls(folder=folder, **known)
+        meeting = cls(folder=folder, **known)
+        # Follow the Word versions present in the folder (deleted or renamed by hand)
+        found = set(meeting.docx_versions) | set(os.listdir(folder))
+        versions = [(int(m.group(1)), n) for n in found if (m := _DOCX_VERSION.fullmatch(n))]
+        meeting.docx_versions = [n for _, n in sorted(versions) if os.path.exists(meeting.path(n))]
+        return meeting
 
     @classmethod
     def create(cls, title: str, meeting_date: str, organization: str = "", root: str | None = None) -> "Meeting":

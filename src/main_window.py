@@ -4,7 +4,7 @@ import logging
 import os
 
 from PySide6.QtCore import QByteArray, QDate, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -25,7 +25,7 @@ from .meeting import Meeting, list_meetings
 from .meeting_view import MeetingView
 from .notifications import NotificationSounds, alert_window
 from .settings import FirstRunWizard, SettingsDialog
-from .utils import APP_NAME, load_config, save_config
+from .utils import APP_ICON, APP_NAME, load_config, resource_path, save_config
 
 log = logging.getLogger("pvwriter.main_window")
 
@@ -218,7 +218,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, tr("menu.shortcuts"), tr("help.shortcuts"))
 
     def _show_about(self):
-        QMessageBox.about(self, tr("menu.about"), tr("help.about", version=__version__))
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("menu.about"))
+        box.setText(tr("help.about", version=__version__))
+        box.setIconPixmap(
+            QPixmap(resource_path(APP_ICON)).scaled(
+                96, 96, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        )
+        box.exec()
 
     def check_first_run(self):
         """Show the setup wizard when no Mistral API key is configured."""

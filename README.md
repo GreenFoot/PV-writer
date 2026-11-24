@@ -29,9 +29,14 @@ Optionnel : pour rédiger avec Claude, installez le [CLI Claude Code](https://cl
 - macOS : `scripts/run.sh` (ou `.venv/bin/python main.py`)
 - Windows : `scripts\run.bat` (ou `.venv\Scripts\pythonw.exe main.py`)
 
+Lancée ainsi, l'application apparaît sous le nom « python » dans la barre des menus, le Dock ou la barre des tâches. Pour qu'elle apparaisse comme « PV Writer », avec son icône, créez une fois un lanceur :
+
+- macOS : `scripts/make_macos_app.sh` crée `~/Applications/PV Writer.app` (lancez-le depuis Spotlight ou le Launchpad, puis gardez-le dans le Dock). À refaire seulement si `.venv` est recréé ou si la version de Python change.
+- Windows : `powershell -ExecutionPolicy Bypass -File scripts\make_windows_shortcut.ps1` crée les raccourcis « PV Writer » du menu Démarrer et du bureau. Épinglez l'application depuis le menu Démarrer.
+
 Au premier lancement, un assistant demande la clé API Mistral et le microphone.
 
-Sur macOS, le système demande l'autorisation d'accès au micro au premier enregistrement. Elle est accordée au Terminal (ou à l'application qui lance Python). Si le test du micro ne capte rien, vérifiez Réglages Système > Confidentialité et sécurité > Microphone.
+Sur macOS, le système demande l'autorisation d'accès au micro au premier enregistrement. Elle est accordée à « PV Writer » si l'application est lancée par son lanceur, sinon au Terminal (ou à l'application qui lance Python). Si le test du micro ne capte rien, vérifiez Réglages Système > Confidentialité et sécurité > Microphone.
 
 ## Utilisation
 

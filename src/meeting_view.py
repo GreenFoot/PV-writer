@@ -13,15 +13,32 @@ import shutil
 import time
 
 import soundfile as sf
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QImageReader,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+    QTextImageFormat,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -30,8 +47,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QTabWidget,
-    QTextBrowser,
-    QToolButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -45,8 +61,9 @@ from .i18n import tr
 from .meeting import EXTRACTION_FILE, PV_FILE, Meeting, read_json, write_json
 from .meeting_info_panel import MeetingInfoPanel
 from .notes_editor import NotesEditor
-from .pv_document import render_preview_html
-from .pv_pipeline import DEFAULT_AGENDA, PvInputs, start_pv_generation
+from .pv_document import IMAGE_MAX_WIDTH, render_preview_html
+from .pv_import import import_docx, qt_records, records_to_pv, store_image
+from .pv_pipeline import DEFAULT_AGENDA, SUMMARY_NODE, PvInputs, start_pv_generation
 from .transcriber import is_transcript_file, start_live_transcription, start_transcription
 from .utils import format_duration, format_file_size
 
@@ -57,11 +74,71 @@ COLOR_WORK = "#b26a00"
 COLOR_OK = "#2e7d32"
 COLOR_ERROR = "#c62828"
 _LIVE_COOLDOWN_SECONDS = 60
+# Send a live chunk even without a pause in the talk, so a lively discussion (or steady
+# background noise) never leaves a long stretch untranscribed until Stop.
+_LIVE_MAX_CHUNK_SECONDS = 600
 
 
 def meeting_agenda(meeting: Meeting) -> list[AgendaNode]:
     """Return the meeting's agenda tree (a default single item when empty)."""
     return parse_agenda(meeting.agenda_text if meeting.agenda_text.strip() else DEFAULT_AGENDA)
+
+
+class PvEditor(QTextEdit):
+    """Editable PV view; Ctrl/Cmd + click on an agenda link jumps to the section."""
+
+    def mouseReleaseEvent(self, event):
+        anchor = self.anchorAt(event.position().toPoint())
+        if anchor.startswith("#") and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.scrollToAnchor(anchor[1:])
+            return
+        super().mouseReleaseEvent(event)
+
+
+class SlidePickerDialog(QDialog):
+    """Show the pages of a PDF as thumbnails and let the user pick one."""
+
+    def __init__(self, pdf_path: str, parent=None):
+        super().__init__(parent)
+        from PySide6.QtPdf import QPdfDocument  # pylint: disable=import-outside-toplevel
+
+        self.setWindowTitle(tr("dialog.slide_pick_title"))
+        self.resize(820, 560)
+        self.document = QPdfDocument(self)
+        self.document.load(pdf_path)
+        layout = QVBoxLayout(self)
+        self.list = QListWidget()
+        self.list.setViewMode(QListView.ViewMode.IconMode)
+        self.list.setIconSize(QSize(240, 150))
+        self.list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list.setSpacing(8)
+        for page in range(self.document.pageCount()):
+            size = self.document.pagePointSize(page)
+            scale = 240 / max(1.0, size.width())
+            image = self.document.render(page, QSize(240, int(size.height() * scale)))
+            item = QListWidgetItem(QIcon(QPixmap.fromImage(image)), str(page + 1))
+            item.setData(Qt.ItemDataRole.UserRole, page)
+            self.list.addItem(item)
+        self.list.itemDoubleClicked.connect(lambda _item: self.accept())
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_png(self, width: int = 1800) -> bytes:
+        """Render the chosen page as PNG bytes, or b"" when nothing is selected."""
+        item = self.list.currentItem()
+        if item is None:
+            return b""
+        page = item.data(Qt.ItemDataRole.UserRole)
+        size = self.document.pagePointSize(page)
+        image = self.document.render(page, QSize(width, int(size.height() * width / max(1.0, size.width()))))
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(data)
 
 
 class _DropOverlay(QWidget):
@@ -147,6 +224,7 @@ class MeetingView(QWidget):
         self._elapsed = 0
         self._base_seconds = 0.0  # audio already recorded for this meeting before this take
         self._bodies: dict[str, str] = {}
+        self._summary: dict = {}
         self._freeze_watchdog = None
         self._drop_overlay = None
 
@@ -255,15 +333,29 @@ class MeetingView(QWidget):
         self.btn_open_docx = QPushButton(tr("pv.btn_open_docx"))
         pv_bar.addWidget(self.node_combo, 1)
         pv_bar.addWidget(self.btn_regen_node)
+        self._image_menu = QMenu(self)
+        self._act_image_slide = self._image_menu.addAction(tr("pv.image_from_slides"))
+        self._act_image_file = self._image_menu.addAction(tr("pv.image_from_file"))
+        # QPushButton (not QToolButton) so it takes the stylesheet of the other buttons
+        self.btn_insert_image = QPushButton(tr("pv.btn_insert_image") + "  ▾")
+        self.btn_insert_image.setObjectName("btn_menu")
+        self.btn_insert_image.setToolTip(tr("pv.insert_image_tooltip"))
+        self.btn_insert_image.setMenu(self._image_menu)
+        pv_bar.addWidget(self.btn_insert_image)
         pv_bar.addStretch()
         pv_bar.addWidget(self.btn_open_docx)
         pv_layout.addLayout(pv_bar)
-        self.pv_preview = QTextBrowser()
+        self.pv_preview = PvEditor()
         self.pv_preview.setObjectName("pv_preview")
-        self.pv_preview.setOpenLinks(False)
-        self.pv_preview.anchorClicked.connect(lambda url: self.pv_preview.scrollToAnchor(url.fragment()))
+        self.pv_preview.setAcceptRichText(False)  # pasted text keeps the PV formatting
         self.pv_preview.setPlaceholderText(tr("pv.placeholder"))
+        self.pv_preview.setToolTip(tr("pv.edit_hint"))
         pv_layout.addWidget(self.pv_preview)
+        self._pv_loading = False  # True while the view is filled from the bodies
+        self._pv_edit_timer = QTimer(self)
+        self._pv_edit_timer.setSingleShot(True)
+        self._pv_edit_timer.setInterval(1000)
+        self._pv_edit_timer.timeout.connect(self._save_pv_edits)
         self.pv_versions_label = QLabel("")
         self.pv_versions_label.setObjectName("hint_label")
         pv_layout.addWidget(self.pv_versions_label)
@@ -286,13 +378,12 @@ class MeetingView(QWidget):
         self._more_menu = QMenu(self)
         self._act_import = self._more_menu.addAction(tr("action.import"))
         self._act_save_audio = self._more_menu.addAction(tr("action.save_audio"))
+        self._act_import_docx = self._more_menu.addAction(tr("action.import_docx"))
         self._more_menu.addSeparator()
         self._act_open_folder = self._more_menu.addAction(tr("action.open_folder"))
-        self.btn_more = QToolButton()
-        self.btn_more.setText("⋮")
+        self.btn_more = QPushButton("⋮")
         self.btn_more.setObjectName("btn_more")
         self.btn_more.setToolTip(tr("action.more_tooltip"))
-        self.btn_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_more.setMenu(self._more_menu)
 
         actions.addWidget(self.btn_transcribe)
@@ -315,18 +406,24 @@ class MeetingView(QWidget):
         self.btn_transcribe.clicked.connect(self._start_transcription)
         self.btn_generate.clicked.connect(lambda: self._start_generation(None))
         self.btn_regen_node.clicked.connect(self._regenerate_selected_node)
+        self._act_image_slide.triggered.connect(self._insert_slide_image)
+        self._act_image_file.triggered.connect(self._insert_file_image)
         self.btn_export.clicked.connect(self._export_docx)
         self.btn_open_docx.clicked.connect(self._open_last_docx)
         self.btn_insert_agenda.clicked.connect(self._insert_agenda_in_notes)
         self._act_import.triggered.connect(self._import_files)
         self._act_save_audio.triggered.connect(self._save_audio)
         self._act_open_folder.triggered.connect(self.open_folder)
+        self._act_import_docx.triggered.connect(self._import_pv_docx)
+        self.pv_preview.textChanged.connect(self._on_pv_edited)
         self.transcript_edit.textChanged.connect(self._on_transcript_edited)
 
         self.info_panel.changed.connect(self._on_info_changed)
         self.info_panel.agenda_changed.connect(self._on_agenda_changed)
         self.info_panel.previous_pv_requested.connect(self._choose_previous_pv)
         self.info_panel.previous_pv_cleared.connect(self._clear_previous_pv)
+        self.info_panel.slides_requested.connect(self._choose_slides)
+        self.info_panel.slides_cleared.connect(self._clear_slides)
 
         self._recorder.recording_started.connect(self._on_recording_started)
         self._recorder.recording_stopped.connect(self._on_recording_stopped)
@@ -349,10 +446,14 @@ class MeetingView(QWidget):
         self.btn_transcribe.setEnabled(not recording and not busy and has_sources)
         self.btn_generate.setEnabled(not recording and not busy)
         self.btn_regen_node.setEnabled(not recording and not busy and bool(self._bodies))
+        self.btn_insert_image.setEnabled(not self._generating and bool(self._bodies))
+        self._act_image_slide.setEnabled(self._meeting.slides.lower().endswith(".pdf"))
         self.btn_export.setEnabled(not busy and any(self._bodies.values()))
         self.btn_open_docx.setEnabled(bool(self._meeting.docx_versions))
         self._act_import.setEnabled(not recording and not busy)
         self._act_save_audio.setEnabled(any(not is_transcript_file(p) for p in self._meeting.source_paths()))
+        self._act_import_docx.setEnabled(not busy)
+        self.pv_preview.setReadOnly(self._generating or not self._bodies)
         self.btn_stamp.setEnabled(recording)
 
     # ── Meeting binding ───────────────────────────────────
@@ -393,7 +494,9 @@ class MeetingView(QWidget):
         self.transcript_edit.setPlainText(self._read_text(meeting.transcript_path))
         self.transcript_edit.blockSignals(False)
 
-        self._bodies = read_json(meeting.path(PV_FILE), {}).get("bodies", {})
+        pv_data = read_json(meeting.path(PV_FILE), {})
+        self._bodies = pv_data.get("bodies", {})
+        self._summary = pv_data.get("summary", {})
         self._refresh_agenda_views()
         self._refresh_versions()
         self.duration_label.setText(format_duration(int(self._audio_duration())))
@@ -409,6 +512,9 @@ class MeetingView(QWidget):
         if self._transcript_timer.isActive():
             self._transcript_timer.stop()
             self._save_transcript()
+        if self._pv_edit_timer.isActive():
+            self._pv_edit_timer.stop()
+            self._save_pv_edits()
         self._sync_meeting()
 
     def _sync_meeting(self):
@@ -435,6 +541,7 @@ class MeetingView(QWidget):
         """Refresh the node picker and the preview after an agenda change."""
         current = self.node_combo.currentData()
         self.node_combo.clear()
+        self.node_combo.addItem(tr("pv.regen_summary"), SUMMARY_NODE)
         for node in iter_nodes(meeting_agenda(self._meeting)):
             self.node_combo.addItem(("    " * (node.level - 1)) + node.heading, node.node_id)
         idx = self.node_combo.findData(current)
@@ -443,13 +550,113 @@ class MeetingView(QWidget):
         self._refresh_preview()
 
     def _refresh_preview(self):
-        if not self._bodies:
-            self.pv_preview.clear()
+        self._pv_loading = True
+        try:
+            if not self._bodies:
+                self.pv_preview.clear()
+                return
+            scroll = self.pv_preview.verticalScrollBar().value()
+            html = render_preview_html(
+                self._meeting.pv_title, meeting_agenda(self._meeting), self._bodies, self._summary
+            )
+            # The <img src> of the bodies are relative to the meeting folder
+            self.pv_preview.document().setBaseUrl(QUrl.fromLocalFile(self._meeting.folder + os.sep))
+            self.pv_preview.setHtml(html)
+            self.pv_preview.verticalScrollBar().setValue(scroll)
+        finally:
+            self._pv_loading = False
+
+    def _on_pv_edited(self):
+        if not self._pv_loading and not self._generating and self._bodies:
+            self._pv_edit_timer.start()
+
+    def _save_pv_edits(self):
+        """Read the edited PV tab back into the bodies and the synthesis, then save them."""
+        if self._generating or not self._bodies:
             return
-        scroll = self.pv_preview.verticalScrollBar().value()
-        html = render_preview_html(self._meeting.pv_title, meeting_agenda(self._meeting), self._bodies)
-        self.pv_preview.setHtml(html)
-        self.pv_preview.verticalScrollBar().setValue(scroll)
+        bodies, summary, warnings = records_to_pv(
+            qt_records(self.pv_preview.document(), self._meeting.folder), meeting_agenda(self._meeting)
+        )
+        self._bodies, self._summary = bodies, summary
+        self._write_pv(edited=time.strftime("%Y-%m-%dT%H:%M"))
+        if warnings:
+            self._set_status(" ".join(warnings), COLOR_WORK)
+        else:
+            self._set_status(tr("status.pv_saved"), COLOR_OK)
+
+    def _insert_slide_image(self):
+        """Insert one page of the meeting's slides (PDF) at the cursor of the PV tab."""
+        dialog = SlidePickerDialog(self._meeting.path(self._meeting.slides), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.selected_png()
+        if data:
+            self._insert_image(store_image(self._meeting.folder, data, "png"), IMAGE_MAX_WIDTH)
+
+    def _insert_file_image(self):
+        """Insert a picture file at the cursor of the PV tab."""
+        path, _ = QFileDialog.getOpenFileName(self, tr("dialog.image_title"), "", tr("dialog.image_filter"))
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            self._on_error(tr("error.copy_failed", error=e))
+            return
+        size = QImageReader(path).size()
+        width = min(IMAGE_MAX_WIDTH, size.width()) if size.isValid() else IMAGE_MAX_WIDTH
+        self._insert_image(store_image(self._meeting.folder, data, os.path.splitext(path)[1]), width)
+
+    def _insert_image(self, src: str, width: int):
+        """Add a picture in a new paragraph after the cursor's paragraph; the autosave stores it."""
+        cursor = self.pv_preview.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+        cursor.insertBlock(QTextBlockFormat(), QTextCharFormat())
+        image = QTextImageFormat()
+        image.setName(src)
+        image.setWidth(width)
+        cursor.insertImage(image)
+        self.pv_preview.setTextCursor(cursor)
+        self.pv_preview.setFocus()
+
+    def _write_pv(self, **extra):
+        """Save the bodies and the synthesis to pv.json, keeping the other keys."""
+        path = self._meeting.path(PV_FILE)
+        data = read_json(path, {})
+        data.update({"bodies": self._bodies, "summary": self._summary}, **extra)
+        write_json(path, data)
+
+    def _import_pv_docx(self):
+        """Replace the PV with the content of a Word document corrected by hand."""
+        self.save_all()
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("dialog.import_docx_title"), self._meeting.folder, tr("dialog.import_docx_filter")
+        )
+        if not path:
+            return
+        backup = "pv_avant_import.json"
+        if self._bodies:
+            answer = QMessageBox.question(
+                self, tr("confirm.title"), tr("confirm.import_docx", name=os.path.basename(path), backup=backup)
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            bodies, summary, warnings = import_docx(path, meeting_agenda(self._meeting), self._meeting.folder)
+        except Exception as e:  # python-docx raises several types on a damaged file
+            log.exception("Word import failed")
+            self._on_error(tr("error.import_docx_failed", error=e))
+            return
+        if os.path.exists(self._meeting.path(PV_FILE)):
+            shutil.copy2(self._meeting.path(PV_FILE), self._meeting.path(backup))
+        self._bodies, self._summary = bodies, summary
+        self._write_pv(imported=os.path.basename(path), edited=time.strftime("%Y-%m-%dT%H:%M"))
+        self._refresh_preview()
+        self.tabs.setCurrentIndex(2)
+        message = tr("status.pv_imported", name=os.path.basename(path))
+        self._set_status(" ".join([message] + warnings), COLOR_WORK if warnings else COLOR_OK)
+        self._update_buttons()
 
     def _refresh_versions(self):
         versions = self._meeting.docx_versions
@@ -548,6 +755,7 @@ class MeetingView(QWidget):
     def _on_duration_update(self, seconds: int):
         self._elapsed = seconds
         self.duration_label.setText(format_duration(int(self._base_seconds) + seconds))
+        self._maybe_send_live_chunk(_LIVE_MAX_CHUNK_SECONDS)
 
     def _on_recording_stopped(self, wav_path: str):
         self.btn_record.setText(tr("rec.btn.record"))
@@ -621,12 +829,20 @@ class MeetingView(QWidget):
 
     def _on_silence_detected(self):
         """Trigger live transcription when silence is detected during recording."""
-        if not self._recorder.is_recording or self._live_tx_pending:
+        self._maybe_send_live_chunk(_LIVE_COOLDOWN_SECONDS)
+
+    def _maybe_send_live_chunk(self, min_interval: float):
+        """Send the audio recorded since the last live chunk, if enough time has passed.
+
+        Args:
+            min_interval: Seconds that must have elapsed since the previous live chunk.
+        """
+        if not self._recorder.is_recording or self._recorder.is_paused or self._live_tx_pending:
             return
         if not self._config.get("api_key"):
             return
         now = time.time()
-        if now - self._last_live_transcription < _LIVE_COOLDOWN_SECONDS:
+        if now - self._last_live_transcription < min_interval:
             return
         pending = self._recorder.take_pending_audio()
         if not pending:
@@ -906,13 +1122,14 @@ class MeetingView(QWidget):
         )
         cached = read_json(meeting.path(EXTRACTION_FILE), None)
         previous = meeting.path(meeting.previous_pv) if meeting.previous_pv else ""
+        slides = meeting.path(meeting.slides) if meeting.slides else ""
 
         self._generating = True
         self._update_buttons()
         self._set_status(tr("status.generating"), COLOR_WORK)
         self.tabs.setCurrentIndex(2)
         self._pv_thread, self._pv_worker = start_pv_generation(
-            inputs, dict(self._config), cached, only_node, dict(self._bodies), previous
+            inputs, dict(self._config), cached, only_node, dict(self._bodies), previous, slides
         )
         self._pv_worker.progress.connect(lambda text: self._set_status(text, COLOR_WORK))
         self._pv_worker.section_done.connect(self._on_section_done)
@@ -928,7 +1145,8 @@ class MeetingView(QWidget):
     def _on_generation_done(self, result, cache):
         self._generating = False
         self._bodies = result.bodies
-        write_json(self._meeting.path(PV_FILE), {"bodies": self._bodies, "generated": time.strftime("%Y-%m-%dT%H:%M")})
+        self._summary = result.summary
+        self._write_pv(generated=time.strftime("%Y-%m-%dT%H:%M"))
         write_json(self._meeting.path(EXTRACTION_FILE), cache)
         self._refresh_preview()
         if result.warnings:
@@ -943,7 +1161,14 @@ class MeetingView(QWidget):
         name = self._meeting.next_docx_name()
         path = self._meeting.path(name)
         try:
-            export_docx(path, self._meeting.pv_title, meeting_agenda(self._meeting), self._bodies)
+            export_docx(
+                path,
+                self._meeting.pv_title,
+                meeting_agenda(self._meeting),
+                self._bodies,
+                self._summary,
+                image_root=self._meeting.folder,
+            )
         except Exception as e:
             log.exception("Word export failed")
             self._on_error(tr("error.export_failed", error=e))
@@ -975,6 +1200,25 @@ class MeetingView(QWidget):
         self._meeting.previous_pv = name
         self._meeting.save()
         self.info_panel.refresh_previous_pv()
+
+    def _choose_slides(self):
+        path, _ = QFileDialog.getOpenFileName(self, tr("dialog.slides_title"), "", tr("dialog.slides_filter"))
+        if not path:
+            return
+        name = f"slides{os.path.splitext(path)[1].lower()}"
+        try:
+            shutil.copy2(path, self._meeting.path(name))
+        except OSError as e:
+            self._on_error(tr("error.copy_failed", error=e))
+            return
+        self._meeting.slides = name
+        self._meeting.save()
+        self.info_panel.refresh_slides()
+
+    def _clear_slides(self):
+        self._meeting.slides = ""
+        self._meeting.save()
+        self.info_panel.refresh_slides()
 
     def _clear_previous_pv(self):
         self._meeting.previous_pv = ""

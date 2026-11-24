@@ -70,6 +70,8 @@ STRINGS = {
     "info.previous_none": "Aucun",
     "info.previous_choose": "Choisir…",
     "info.previous_clear": "Retirer le PV précédent",
+    "info.slides": "Slides projetées (PDF, reprises dans le PV) :",
+    "info.slides_clear": "Retirer les slides",
     # ── Meeting view ──────────────────────────────────────
     "meeting.drop_hint": "Déposez des fichiers audio ou des transcriptions ici",
     "tab.notes": "Notes",
@@ -91,11 +93,20 @@ STRINGS = {
         "La transcription apparaîtra ici, au fil de l'enregistrement ou après l'import de fichiers audio."
     ),
     "pv.regen_label": "Point :",
+    "pv.regen_summary": "Synthèse (résumé et actions)",
     "pv.btn_regen_node": "Régénérer ce point",
+    "pv.btn_insert_image": "Insérer une image",
+    "pv.insert_image_tooltip": "Ajoute une image sous le paragraphe où se trouve le curseur.",
+    "pv.image_from_slides": "Une slide de la présentation…",
+    "pv.image_from_file": "Un fichier image…",
     "pv.btn_open_docx": "Ouvrir le document Word",
     "pv.placeholder": (
         "Le procès-verbal apparaîtra ici après la génération. "
         "Il est exporté en document Word, modifiable et réexportable en PDF."
+    ),
+    "pv.edit_hint": (
+        "Le texte est modifiable et enregistré automatiquement. Le titre et l'agenda viennent des "
+        "informations de la réunion. Ctrl/Cmd + clic sur un point de l'agenda pour y aller."
     ),
     "pv.versions": "Documents : {files}",
     "action.transcribe": "Transcrire",
@@ -103,6 +114,7 @@ STRINGS = {
     "action.export_docx": "Exporter en Word",
     "action.import": "Importer audio / transcriptions…",
     "action.save_audio": "Enregistrer l'audio sous…",
+    "action.import_docx": "Importer un PV Word corrigé…",
     "action.open_folder": "Ouvrir le dossier de la réunion",
     "action.more_tooltip": "Plus d'actions",
     "status.ready": "Prêt",
@@ -123,6 +135,8 @@ STRINGS = {
     "status.exported": "Exporté : {name}",
     "status.imported": "{count} fichier(s) importé(s)",
     "status.audio_saved": "Audio enregistré : {name}",
+    "status.pv_saved": "Modifications du PV enregistrées",
+    "status.pv_imported": "PV importé depuis {name}",
     "post.title": "Enregistrement terminé",
     "post.duration": "Durée :",
     "post.size": "Taille :",
@@ -130,6 +144,10 @@ STRINGS = {
     "post.btn_transcribe": "Transcrire maintenant",
     "post.btn_later": "Plus tard",
     "confirm.title": "Confirmation",
+    "confirm.import_docx": (
+        "Remplacer le PV actuel (texte et synthèse) par le contenu de {name} ?\n\n"
+        "Une copie du PV actuel est gardée dans {backup}."
+    ),
     "confirm.overwrite_transcript": "Remplacer la transcription existante par une nouvelle transcription des sources ?",
     "error.no_sources": "Aucun fichier audio ou transcription à traiter.",
     "error.copy_failed": "Impossible de copier le fichier : {error}",
@@ -137,10 +155,18 @@ STRINGS = {
     "error.no_audio_save": "Aucun fichier audio dans cette réunion.",
     "error.save_failed": "Échec de l'enregistrement : {error}",
     "error.export_failed": "Échec de l'export Word : {error}",
+    "error.import_docx_failed": "Échec de l'import du document Word : {error}",
     "dialog.save_audio_title": "Enregistrer l'audio",
     "dialog.save_audio_pick": "Fichier audio :",
     "dialog.save_audio_filter": "Audio FLAC (*.flac)",
     "dialog.previous_title": "Choisir le PV précédent",
+    "dialog.import_docx_title": "Importer un PV Word",
+    "dialog.import_docx_filter": "Documents Word (*.docx)",
+    "dialog.slides_title": "Choisir les slides de la réunion",
+    "dialog.slides_filter": "Présentation exportée en PDF (*.pdf);;Texte (*.txt *.md)",
+    "dialog.slide_pick_title": "Choisir la slide à insérer",
+    "dialog.image_title": "Choisir une image",
+    "dialog.image_filter": "Images (*.png *.jpg *.jpeg *.gif *.bmp)",
     "dialog.previous_filter": "Documents (*.docx *.pdf *.txt *.md);;Tous (*)",
     # ── Main window ───────────────────────────────────────
     "menu.meeting": "Réunion",
@@ -259,10 +285,15 @@ STRINGS = {
     # ── PV pipeline ───────────────────────────────────────
     "pipeline.progress.extract": "Analyse de la transcription : partie {current}/{total}…",
     "pipeline.progress.redact": "Rédaction du point {current}/{total} : {title}",
+    "pipeline.progress.summary": "Rédaction de la synthèse…",
     "pipeline.progress.rate_wait": "Limite de débit de l'API Mistral : reprise dans {seconds} s…",
     "transcriber.rate_wait": "Limite de débit de l'API Mistral : reprise dans {seconds} s…",
     "pipeline.no_organization": "(non précisée : « nous » désigne les organisateurs de la réunion)",
     "pipeline.warning.extract_failed": "La partie {part} de la transcription n'a pas pu être analysée.",
+    "pipeline.warning.slides_image_only": (
+        "Slide(s) {pages} sans texte (image) : contenu non repris, à compléter à la main si utile."
+    ),
+    "pipeline.warning.summary_failed": "La synthèse n'a pas pu être rédigée ; le PV est complet sans elle.",
     "pipeline.error.nothing": "Rien à rédiger : ajoutez des notes ou une transcription.",
     "pipeline.error.generic": "Erreur pendant la génération du PV : {error}",
 }

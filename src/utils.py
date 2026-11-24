@@ -44,6 +44,9 @@ _DEFAULT_CONFIG = {
 }
 
 
+APP_ICON = "assets/icons/pv_writer.png"  # .ico / .icns next to it for packaged builds
+
+
 def resource_path(relative_path: str) -> str:
     """Return the absolute path of a bundled resource, in dev and in PyInstaller builds.
 

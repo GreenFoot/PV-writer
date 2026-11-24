@@ -3,9 +3,12 @@
 Vendored from dnd_logger@bc2bdf1 src/audio_recorder.py — keep in sync manually.
 Changes: the output folder is passed in (one folder per meeting), the number of samples
 written is tracked so live chunks know their start offset, and keep-awake goes through
-the cross-platform ``power.KeepAwake``.
+the cross-platform ``power.KeepAwake``. Pause drops the audio in the callback instead of
+stopping the stream, and stop closes the stream on a helper thread with a timeout: on macOS,
+``Pa_StopStream`` can deadlock inside CoreAudio and used to freeze the GUI for good.
 """
 
+import logging
 import os
 import queue
 import threading
@@ -19,6 +22,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from .i18n import tr
 from .power import KeepAwake
 from .utils import ensure_dir
+
+log = logging.getLogger("pvwriter.recorder")
 
 
 class AudioRecorder(QObject):
@@ -36,6 +41,11 @@ class AudioRecorder(QObject):
     _SENTINEL = None  # signals writer thread to stop
     _SILENCE_THRESHOLD = 0.01  # RMS below this counts as silence
     _SILENCE_BLOCKS = 30  # consecutive silent blocks needed (~1.5s at 50ms/block)
+    _STREAM_CLOSE_TIMEOUT = 3.0  # seconds to wait for PortAudio before giving up on the stream
+
+    # Set once a stream stop never returned. PortAudio then cannot be terminated cleanly,
+    # so main.py exits with os._exit instead of hanging in sounddevice's atexit handler.
+    stream_stuck = False
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
@@ -164,30 +174,27 @@ class AudioRecorder(QObject):
             self._cleanup_on_error()
 
     def pause_recording(self):
-        """Pause recording — stop the stream but keep the file open."""
+        """Pause recording — the stream keeps running but the callback drops the audio.
+
+        Stopping and restarting the PortAudio stream is avoided on purpose: on macOS a
+        stream stop can deadlock inside CoreAudio (see :meth:`_close_stream`).
+        """
         if not self._is_recording or self._is_paused:
             return
-        try:
-            if self._stream:
-                self._stream.stop()
-            self._is_paused = True
-            self._timer.stop()
-            self.recording_paused.emit()
-        except Exception as e:
-            self.error_occurred.emit(tr("recorder.error.pause", error=e))
+        self._is_paused = True
+        self._timer.stop()
+        self.level_update.emit(0.0)
+        self.recording_paused.emit()
 
     def resume_recording(self):
-        """Resume a paused recording — restart the stream."""
+        """Resume a paused recording."""
         if not self._is_recording or not self._is_paused:
             return
-        try:
-            if self._stream:
-                self._stream.start()
-            self._is_paused = False
-            self._timer.start()
-            self.recording_resumed.emit()
-        except Exception as e:
-            self.error_occurred.emit(tr("recorder.error.resume", error=e))
+        self._silence_frames = 0
+        self._silence_emitted = False
+        self._is_paused = False
+        self._timer.start()
+        self.recording_resumed.emit()
 
     def stop_recording(self) -> str | None:
         """Stop recording and return path to WAV file."""
@@ -197,13 +204,9 @@ class AudioRecorder(QObject):
         self._is_paused = False
         self._timer.stop()
 
-        # Stop input stream
+        # Stop input stream (the callback already drops audio now that _is_recording is False)
         if self._stream:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
+            self._close_stream(self._stream)
             self._stream = None
 
         # Signal writer thread to finish
@@ -224,6 +227,34 @@ class AudioRecorder(QObject):
         path = self._wav_path
         self.recording_stopped.emit(path)
         return path
+
+    @classmethod
+    def _close_stream(cls, stream):
+        """Stop and close a PortAudio stream without blocking the caller for good.
+
+        On macOS, ``Pa_StopStream`` can deadlock: CoreAudio's IO thread waits for the
+        audio unit lock held by the stopping thread, which waits for the HAL lock held by
+        the IO thread. Run on the GUI thread, that froze the app forever when the user
+        pressed Stop. The stop runs on a daemon thread instead; past the timeout the
+        stream is abandoned so the WAV is still closed and the last chunk transcribed.
+
+        Args:
+            stream: The ``sd.InputStream`` to stop and close.
+        """
+
+        def _stop():
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # pylint: disable=broad-except
+                log.exception("Could not stop the audio stream")
+
+        thread = threading.Thread(target=_stop, name="audio-stream-stop", daemon=True)
+        thread.start()
+        thread.join(cls._STREAM_CLOSE_TIMEOUT)
+        if thread.is_alive():
+            cls.stream_stuck = True
+            log.error("Audio stream stop did not return after %.0f s; abandoning it", cls._STREAM_CLOSE_TIMEOUT)
 
     def take_pending_audio(self) -> tuple | None:
         """Detach the pending live-transcription buffer without encoding it.
@@ -256,6 +287,8 @@ class AudioRecorder(QObject):
         """Called by PortAudio in its own thread — just enqueue data."""
         if status:
             pass  # Could log status flags
+        if self._is_paused or not self._is_recording:
+            return
         self._queue.put(indata.copy())
         # Calculate RMS for VU meter
         rms = np.sqrt(np.mean(indata.astype(np.float32) ** 2)) / 32768.0

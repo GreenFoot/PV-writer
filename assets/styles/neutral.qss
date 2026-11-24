@@ -126,7 +126,14 @@ QPushButton#btn_stop {
 }
 
 QPushButton#btn_more {
-    padding: 5px 8px;
+    padding: 5px 10px;
+}
+
+/* Buttons that open a menu: the "▾" is in the label, hide Qt's own arrow */
+QPushButton#btn_menu::menu-indicator,
+QPushButton#btn_more::menu-indicator {
+    image: none;
+    width: 0px;
 }
 
 QTabWidget::pane {

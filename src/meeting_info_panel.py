@@ -1,4 +1,4 @@
-"""Side panel with the meeting metadata: title, date, organization, agenda, glossary, previous PV."""
+"""Side panel with the meeting metadata: title, date, organization, agenda, glossary, slides, previous PV."""
 
 import os
 
@@ -26,6 +26,8 @@ class MeetingInfoPanel(QWidget):
     agenda_changed = Signal()
     previous_pv_requested = Signal()
     previous_pv_cleared = Signal()
+    slides_requested = Signal()
+    slides_cleared = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,19 +80,12 @@ class MeetingInfoPanel(QWidget):
         self.glossary_edit.setPlaceholderText(tr("info.glossary_placeholder"))
         layout.addWidget(self.glossary_edit, 1)
 
-        layout.addWidget(self._label(tr("info.previous_pv")))
-        pv_row = QHBoxLayout()
-        self.previous_label = QLabel(tr("info.previous_none"))
-        self.previous_label.setObjectName("hint_label")
-        self.previous_label.setWordWrap(True)
-        self.btn_previous = QPushButton(tr("info.previous_choose"))
-        self.btn_previous_clear = QPushButton("✕")
-        self.btn_previous_clear.setFixedWidth(32)
-        self.btn_previous_clear.setToolTip(tr("info.previous_clear"))
-        pv_row.addWidget(self.previous_label, 1)
-        pv_row.addWidget(self.btn_previous)
-        pv_row.addWidget(self.btn_previous_clear)
-        layout.addLayout(pv_row)
+        self.slides_label, self.btn_slides, self.btn_slides_clear = self._file_row(
+            layout, tr("info.slides"), tr("info.slides_clear")
+        )
+        self.previous_label, self.btn_previous, self.btn_previous_clear = self._file_row(
+            layout, tr("info.previous_pv"), tr("info.previous_clear")
+        )
 
         for signal in (self.title_edit.textChanged, self.org_edit.textChanged, self.glossary_edit.textChanged):
             signal.connect(self._on_edit)
@@ -98,6 +93,25 @@ class MeetingInfoPanel(QWidget):
         self.agenda_edit.textChanged.connect(self._on_agenda_edit)
         self.btn_previous.clicked.connect(self.previous_pv_requested.emit)
         self.btn_previous_clear.clicked.connect(self.previous_pv_cleared.emit)
+        self.btn_slides.clicked.connect(self.slides_requested.emit)
+        self.btn_slides_clear.clicked.connect(self.slides_cleared.emit)
+
+    def _file_row(self, layout, title: str, clear_tooltip: str):
+        """Add a "file name / Choisir… / ✕" row; return its label and buttons."""
+        layout.addWidget(self._label(title))
+        row = QHBoxLayout()
+        label = QLabel(tr("info.previous_none"))
+        label.setObjectName("hint_label")
+        label.setWordWrap(True)
+        choose = QPushButton(tr("info.previous_choose"))
+        clear = QPushButton("✕")
+        clear.setFixedWidth(32)
+        clear.setToolTip(clear_tooltip)
+        row.addWidget(label, 1)
+        row.addWidget(choose)
+        row.addWidget(clear)
+        layout.addLayout(row)
+        return label, choose, clear
 
     @staticmethod
     def _label(text: str) -> QLabel:
@@ -119,11 +133,18 @@ class MeetingInfoPanel(QWidget):
         self.refresh_previous_pv()
         self._loading = False
 
+    def refresh_slides(self):
+        """Update the slides label from the meeting."""
+        name = self._meeting.slides if self._meeting else ""
+        self.slides_label.setText(os.path.basename(name) if name else tr("info.previous_none"))
+        self.btn_slides_clear.setEnabled(bool(name))
+
     def refresh_previous_pv(self):
-        """Update the previous-PV label from the meeting."""
+        """Update the previous-PV and slides labels from the meeting."""
         name = self._meeting.previous_pv if self._meeting else ""
         self.previous_label.setText(os.path.basename(name) if name else tr("info.previous_none"))
         self.btn_previous_clear.setEnabled(bool(name))
+        self.refresh_slides()
 
     def apply_to(self, meeting: Meeting):
         """Copy the form values into the meeting (does not save it)."""

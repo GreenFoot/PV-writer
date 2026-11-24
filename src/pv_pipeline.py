@@ -6,6 +6,8 @@
 - Stage B writes one HTML fragment per agenda item from its notes and facts, which keeps
   every call short and lets a single item be regenerated.
 - Stage C (``pv_document.py``) adds the title, linked agenda and numbered headings.
+- Stage D writes the one-page synthesis (main points and action list) from the finished
+  bodies. It runs after every generation, including a single-item regeneration.
 
 ``generate_pv`` is plain Python so it can be tested with a fake backend. The Qt worker at
 the bottom runs it in a QThread.
@@ -33,6 +35,7 @@ from .notes_merge import (
     parse_transcript,
     split_for_llm,
 )
+from .pv_document import body_images, parse_fragment
 from .rate_limit import CHARS_PER_TOKEN, estimate_tokens
 from .summarizer import build_backend, markdown_emphasis_to_html, strip_code_fences
 
@@ -42,7 +45,9 @@ EXTRACT_CHUNK_CHARS = 40_000  # upper bound; lowered to fit the model's tokens p
 EXTRACT_MAX_TOKENS = 12_000
 MIN_EXTRACT_CHUNK_CHARS = 4_000
 PREVIOUS_PV_MAX_CHARS = 12_000
+SLIDES_MAX_CHARS = 12_000
 DEFAULT_AGENDA = "Points abordés"
+SUMMARY_NODE = "synthese"  # ``only_node`` value that regenerates the synthesis alone
 _ALLOWED_FACT_TYPES = {
     "info",
     "decision",
@@ -70,6 +75,7 @@ class PvInputs:
         recorded_seconds: Audio duration, to place an untimed transcript.
         glossary: Spelling references.
         previous_pv_text: Text of the previous PV, or "".
+        slides_text: Text of the slides shown during the meeting (``read_slides``), or "".
     """
 
     title: str
@@ -81,15 +87,24 @@ class PvInputs:
     recorded_seconds: float = 0.0
     glossary: list[str] = field(default_factory=list)
     previous_pv_text: str = ""
+    slides_text: str = ""
 
 
 @dataclass
 class PvResult:
-    """Output of a generation run."""
+    """Output of a generation run.
+
+    Attributes:
+        bodies: HTML fragment per agenda id.
+        facts: Stage-A facts.
+        warnings: Messages for the status bar.
+        summary: Stage-D synthesis ``{"points": [...], "actions": [...]}``, or {} if it failed.
+    """
 
     bodies: dict[str, str]
     facts: list[dict]
     warnings: list[str]
+    summary: dict = field(default_factory=dict)
 
 
 def agenda_for(inputs: PvInputs) -> list[AgendaNode]:
@@ -293,6 +308,7 @@ def redact_node(backend, inputs: PvInputs, roots, node: AgendaNode, notes, facts
         notes=format_notes(notes) or "(aucune)",
         faits=format_facts(facts) or "(aucun)",
         glossaire=_glossary_text(inputs.glossary),
+        slides=inputs.slides_text[:SLIDES_MAX_CHARS] or "(non fournies)",
         pv_precedent=inputs.previous_pv_text[:PREVIOUS_PV_MAX_CHARS] or "(non fourni)",
     )
     return clean_fragment(backend.complete(system_prompt, user, temperature=0.3, max_tokens=6000))
@@ -324,6 +340,7 @@ def generate_pv(
         config: App config (custom prompts).
         cached_extraction: Content of ``extraction.json`` from a previous run, if any.
         only_node: Regenerate this agenda item only; other bodies come from ``previous_bodies``.
+            ``SUMMARY_NODE`` regenerates the synthesis alone from ``previous_bodies``.
         previous_bodies: Bodies of the previous run.
         progress: Optional ``callable(str)`` for status messages.
         on_section: Optional ``callable(node_id, html)`` called after each item.
@@ -332,10 +349,20 @@ def generate_pv(
         ``(result, extraction_cache)``: the generated bodies, and the cache to persist.
     """
     roots = agenda_for(inputs)
-    notes = parse_notes(inputs.note_blocks, roots)
-    extract_prompt = pv_prompts.extract_system(config)
     if progress and hasattr(backend, "on_wait"):
         backend.on_wait = lambda seconds: progress(tr("pipeline.progress.rate_wait", seconds=seconds))
+    if only_node == SUMMARY_NODE:
+        # Synthesis only: the bodies (possibly edited by hand) are kept as they are
+        bodies = dict(previous_bodies or {})
+        if not any(bodies.values()):
+            raise RuntimeError(tr("pipeline.error.nothing"))
+        if progress:
+            progress(tr("pipeline.progress.summary"))
+        summary = summarize_pv(backend, inputs, roots, bodies)
+        return PvResult(bodies=bodies, facts=[], warnings=[], summary=summary), cached_extraction or {}
+
+    notes = parse_notes(inputs.note_blocks, roots)
+    extract_prompt = pv_prompts.extract_system(config)
 
     lines_present = bool(inputs.transcript.strip())
     merged_key_source = merge(
@@ -369,13 +396,92 @@ def generate_pv(
             grouped_facts.get(node.node_id, []),
             redact_prompt,
         )
+        # Pictures added by hand are not known to the LLM: keep them, at the end of the item
+        kept = body_images(bodies.get(node.node_id, ""))
+        if kept:
+            html = "\n".join(([html] if html else []) + kept)
         bodies[node.node_id] = html
         if on_section:
             on_section(node.node_id, html)
     # Drop bodies of agenda items that no longer exist
     valid = {n.node_id for n in iter_nodes(roots)}
     bodies = {k: v for k, v in bodies.items() if k in valid}
-    return PvResult(bodies=bodies, facts=facts, warnings=warnings), cache
+
+    # Stage D, rerun after every generation so it follows the regenerated items
+    summary: dict = {}
+    if any(bodies.values()):
+        if progress:
+            progress(tr("pipeline.progress.summary"))
+        try:
+            summary = summarize_pv(backend, inputs, roots, bodies)
+        except Exception:  # the PV itself is fine without its synthesis
+            log.exception("PV summary failed")
+            warnings.append(tr("pipeline.warning.summary_failed"))
+    return PvResult(bodies=bodies, facts=facts, warnings=warnings, summary=summary), cache
+
+
+# ── Stage D ────────────────────────────────────────────────────────────────
+
+
+def pv_plain_text(roots: list[AgendaNode], bodies: dict[str, str]) -> str:
+    """Render the PV as plain text (headings, paragraphs, indented bullets) for a prompt."""
+    lines = []
+    for node in iter_nodes(roots):
+        body = bodies.get(node.node_id, "")
+        lines.append(f"\n{'#' * node.level} {node.heading}")
+        for block in parse_fragment(body):
+            text = block.text.replace("\n", " ").strip()
+            lines.append(f"{'  ' * (block.list_level - 1)}- {text}" if block.list_level else text)
+    return "\n".join(lines).strip()
+
+
+def parse_summary(answer: str) -> dict:
+    """Parse the stage-D answer into ``{"points": [...], "actions": [...]}``.
+
+    Raises:
+        ValueError: If no JSON object can be recovered or it holds nothing usable.
+    """
+    text = strip_code_fences(answer)
+    data = None
+    for candidate in (text, _between(text, "{", "}")):
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+            break
+        except ValueError:
+            continue
+    if not isinstance(data, dict):
+        raise ValueError("no JSON object found in the summary answer")
+
+    def _str(item: dict, key: str) -> str:
+        return str(item.get(key) or "").strip()
+
+    points = [
+        {"sujet": _str(p, "sujet"), "texte": _str(p, "texte")}
+        for p in data.get("points", [])
+        if isinstance(p, dict) and _str(p, "texte")
+    ][: pv_prompts.SUMMARY_MAX_POINTS]
+    actions = [
+        {"action": _str(a, "action"), "qui": _str(a, "qui"), "echeance": _str(a, "echeance")}
+        for a in data.get("actions", [])
+        if isinstance(a, dict) and _str(a, "action")
+    ][: pv_prompts.SUMMARY_MAX_ACTIONS]
+    if not points and not actions:
+        raise ValueError("empty summary")
+    return {"points": points, "actions": actions}
+
+
+def summarize_pv(backend, inputs: PvInputs, roots: list[AgendaNode], bodies: dict[str, str]) -> dict:
+    """Run stage D: the one-page synthesis and action list placed at the top of the PV."""
+    user = pv_prompts.SUMMARY_USER.format(
+        titre=inputs.title,
+        date=inputs.date_fr,
+        organisation=inputs.organization or tr("pipeline.no_organization"),
+        pv=pv_plain_text(roots, bodies),
+    )
+    answer = backend.complete(pv_prompts.SUMMARY_SYSTEM, user, temperature=0.2, max_tokens=3000, json_mode=True)
+    return parse_summary(answer)
 
 
 def read_previous_pv(path: str) -> str:
@@ -406,6 +512,37 @@ def read_previous_pv(path: str) -> str:
         return ""
 
 
+def read_slides(path: str) -> tuple[str, list[int]]:
+    """Extract the text of a slide deck exported as PDF (or a TXT / MD file), slide by slide.
+
+    Args:
+        path: File path, or "" for none.
+
+    Returns:
+        ``(text, image_only)``: the text with a ``[Slide N]`` line before each slide, and the
+        numbers of the slides that hold no text (pictures, scans), which the LLM cannot see.
+    """
+    if not path or not os.path.exists(path):
+        return "", []
+    if os.path.splitext(path)[1].lower() != ".pdf":
+        return read_previous_pv(path), []
+    try:
+        from pypdf import PdfReader
+
+        pages = [page.extract_text() or "" for page in PdfReader(path).pages]
+    except Exception:
+        log.exception("Could not read slides %s", path)
+        return "", []
+    parts, image_only = [], []
+    for number, text in enumerate(pages, start=1):
+        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+        if text:
+            parts.append(f"[Slide {number}]\n{text}")
+        else:
+            image_only.append(number)
+    return "\n\n".join(parts), image_only
+
+
 class PvGenerationWorker(QObject):
     """Runs ``generate_pv`` in a QThread."""
 
@@ -414,7 +551,9 @@ class PvGenerationWorker(QObject):
     completed = Signal(object, object)  # PvResult, extraction cache
     error = Signal(str)
 
-    def __init__(self, inputs: PvInputs, config: dict, cached_extraction, only_node, previous_bodies, previous_pv):
+    def __init__(
+        self, inputs: PvInputs, config: dict, cached_extraction, only_node, previous_bodies, previous_pv, slides=""
+    ):
         """Initialize the worker.
 
         Args:
@@ -424,6 +563,7 @@ class PvGenerationWorker(QObject):
             only_node: Agenda id to regenerate alone, or None for the whole PV.
             previous_bodies: Bodies of the previous run.
             previous_pv: Path of the previous PV file, or "".
+            slides: Path of the slides shown during the meeting, or "".
         """
         super().__init__()
         self._inputs = inputs
@@ -432,6 +572,7 @@ class PvGenerationWorker(QObject):
         self._only_node = only_node
         self._previous_bodies = previous_bodies
         self._previous_pv = previous_pv
+        self._slides = slides
 
     def run(self):
         """Generate the PV and emit the result."""
@@ -440,6 +581,9 @@ class PvGenerationWorker(QObject):
             backend = build_backend(self._config)
             if self._previous_pv:
                 self._inputs.previous_pv_text = read_previous_pv(self._previous_pv)
+            image_only = []
+            if self._slides:
+                self._inputs.slides_text, image_only = read_slides(self._slides)
             result, cache = generate_pv(
                 backend,
                 self._inputs,
@@ -450,6 +594,9 @@ class PvGenerationWorker(QObject):
                 progress=self.progress.emit,
                 on_section=self.section_done.emit,
             )
+            if image_only and self._only_node != SUMMARY_NODE:
+                pages = ", ".join(str(n) for n in image_only)
+                result.warnings.append(tr("pipeline.warning.slides_image_only", pages=pages))
             self.completed.emit(result, cache)
         except Exception as e:
             log.exception("PV generation failed")
@@ -460,11 +607,11 @@ class PvGenerationWorker(QObject):
 
 
 def start_pv_generation(
-    inputs: PvInputs, config: dict, cached_extraction, only_node, previous_bodies, previous_pv
+    inputs: PvInputs, config: dict, cached_extraction, only_node, previous_bodies, previous_pv, slides=""
 ) -> tuple[QThread, PvGenerationWorker]:
     """Create a PV generation worker in a new thread; the caller starts the thread."""
     thread = QThread()
-    worker = PvGenerationWorker(inputs, config, cached_extraction, only_node, previous_bodies, previous_pv)
+    worker = PvGenerationWorker(inputs, config, cached_extraction, only_node, previous_bodies, previous_pv, slides)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.completed.connect(thread.quit)
