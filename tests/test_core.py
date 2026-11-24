@@ -384,7 +384,22 @@ def test_meeting_roundtrip(tmp_path):
     loaded = list_meetings(str(tmp_path))[0]
     assert loaded.pv_title == "PV Réunion des délégués du 24/11/2025"
     assert loaded.sources == ["recording.wav"] and loaded.agenda_text == AGENDA
-    assert loaded.next_docx_name() == "pv_v1.docx"
+    assert loaded.next_docx_name() == "20251124_pv_v1.docx"
+
+
+def test_docx_versions_skip_deleted_files(tmp_path):
+    meeting = Meeting.create("Réunion", "2025-11-24", root=str(tmp_path))
+    for name in ("pv_v1.docx", "pv_v2.docx", "pv_v3.docx"):
+        open(meeting.path(name), "w", encoding="utf-8").close()
+        meeting.docx_versions.append(name)
+    meeting.save()
+    os.remove(meeting.path("pv_v1.docx"))
+    os.remove(meeting.path("pv_v2.docx"))
+    loaded = Meeting.load(meeting.folder)
+    assert loaded.docx_versions == ["pv_v3.docx"]
+    assert loaded.next_docx_name() == "20251124_pv_v4.docx"
+    os.rename(meeting.path("pv_v3.docx"), meeting.path("20251124_pv_v3.docx"))  # renamed by hand
+    assert Meeting.load(meeting.folder).docx_versions == ["20251124_pv_v3.docx"]
 
 
 def test_docx_and_preview_summary(tmp_path):
