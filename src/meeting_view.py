@@ -48,7 +48,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -337,10 +336,10 @@ class MeetingView(QWidget):
         self._image_menu = QMenu(self)
         self._act_image_slide = self._image_menu.addAction(tr("pv.image_from_slides"))
         self._act_image_file = self._image_menu.addAction(tr("pv.image_from_file"))
-        self.btn_insert_image = QToolButton()
-        self.btn_insert_image.setText(tr("pv.btn_insert_image"))
+        # QPushButton (not QToolButton) so it takes the stylesheet of the other buttons
+        self.btn_insert_image = QPushButton(tr("pv.btn_insert_image") + "  ▾")
+        self.btn_insert_image.setObjectName("btn_menu")
         self.btn_insert_image.setToolTip(tr("pv.insert_image_tooltip"))
-        self.btn_insert_image.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_insert_image.setMenu(self._image_menu)
         pv_bar.addWidget(self.btn_insert_image)
         pv_bar.addStretch()
@@ -382,11 +381,9 @@ class MeetingView(QWidget):
         self._act_import_docx = self._more_menu.addAction(tr("action.import_docx"))
         self._more_menu.addSeparator()
         self._act_open_folder = self._more_menu.addAction(tr("action.open_folder"))
-        self.btn_more = QToolButton()
-        self.btn_more.setText("⋮")
+        self.btn_more = QPushButton("⋮")
         self.btn_more.setObjectName("btn_more")
         self.btn_more.setToolTip(tr("action.more_tooltip"))
-        self.btn_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_more.setMenu(self._more_menu)
 
         actions.addWidget(self.btn_transcribe)
