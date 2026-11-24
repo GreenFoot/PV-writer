@@ -70,7 +70,7 @@ def main():
     import traceback
     from logging.handlers import RotatingFileHandler
 
-    from src.utils import APP_NAME, project_root, resource_path
+    from src.utils import APP_ICON, APP_NAME, project_root, resource_path
 
     log_file = os.path.join(project_root(), "pv_writer.log")
     handler = RotatingFileHandler(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
@@ -95,6 +95,7 @@ def main():
     _set_windows_app_id()
 
     from PySide6.QtCore import QLibraryInfo, QLocale, QTimer, QTranslator
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from src.main_window import MainWindow
@@ -103,6 +104,8 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("PVWriter")
     app.setApplicationDisplayName(APP_NAME)
+    # Window and taskbar icon; on macOS also the Dock icon when run from source
+    app.setWindowIcon(QIcon(resource_path(APP_ICON)))
     _force_light_theme(app)
 
     # French labels for Qt's standard buttons and dialogs (Annuler, Enregistrer, Oui…)
