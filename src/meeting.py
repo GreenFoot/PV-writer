@@ -40,6 +40,7 @@ class Meeting:
         agenda_text: Agenda as an indented list (see ``agenda.parse_agenda``).
         glossary: Names, acronyms and terms with their correct spelling.
         previous_pv: File name (inside the folder) of the previous PV, or "".
+        slides: File name (inside the folder) of the slides shown during the meeting, or "".
         sources: Audio/transcript file names (inside the folder), in processing order.
         recorded_seconds: Total recorded audio duration, used to place untimed text.
         docx_versions: Exported Word files, oldest first.
@@ -53,6 +54,7 @@ class Meeting:
     agenda_text: str = ""
     glossary: list[str] = field(default_factory=list)
     previous_pv: str = ""
+    slides: str = ""
     sources: list[str] = field(default_factory=list)
     recorded_seconds: float = 0.0
     docx_versions: list[str] = field(default_factory=list)

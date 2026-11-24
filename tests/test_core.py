@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from src import pv_prompts
 from src.agenda import find_node, match_heading, parse_agenda
 from src.docx_exporter import export_docx
 from src.meeting import Meeting, list_meetings
@@ -19,8 +20,17 @@ from src.notes_merge import (
     parse_transcript,
     split_for_llm,
 )
-from src.pv_document import parse_fragment, render_preview_html
-from src.pv_pipeline import PvInputs, clean_fragment, facts_by_node, generate_pv, parse_facts
+from src.pv_document import classify_blocks, parse_fragment, render_preview_html
+from src.pv_pipeline import (
+    SUMMARY_NODE,
+    PvInputs,
+    clean_fragment,
+    facts_by_node,
+    generate_pv,
+    parse_facts,
+    parse_summary,
+    read_slides,
+)
 from src.transcriber import AudioChunker, _format_segments, _strip_stt_artifacts, build_context_bias
 
 AGENDA = """Concernant l'ADP
@@ -178,15 +188,25 @@ def test_clean_fragment():
     assert clean_fragment("Ligne 1\nLigne 2") == "<p>Ligne 1</p><p>Ligne 2</p>"
 
 
+SUMMARY_ANSWER = {
+    "points": [{"sujet": "Chocolats", "texte": "La vente a rapporté 651,91€."}],
+    "actions": [{"action": "Relancer les cellules", "qui": "ADP", "echeance": ""}],
+}
+
+
 class FakeBackend:
-    """Records prompts and answers stage A with JSON, stage B with HTML."""
+    """Records prompts; answers stage A and D with JSON, stage B with HTML."""
 
     name = "fake"
 
     def __init__(self):
         self.calls = []
+        self.summary_calls = []
 
     def complete(self, system_prompt, user_prompt, temperature, max_tokens, json_mode=False):
+        if system_prompt == pv_prompts.SUMMARY_SYSTEM:
+            self.summary_calls.append(user_prompt)
+            return json.dumps(SUMMARY_ANSWER)
         self.calls.append((json_mode, user_prompt))
         if json_mode:
             return json.dumps({"faits": [{"point": "1.1", "type": "info", "texte": "Bénéfice de 651,91€."}]})
@@ -226,6 +246,55 @@ def test_generate_pv_reuses_cached_extraction_and_single_node():
     assert not any(json_mode for json_mode, _ in backend2.calls)
     assert len(backend2.calls) == 1
     assert result2.bodies["1.1"] == result.bodies["1.1"]
+    # The synthesis follows every generation, including a single item
+    assert len(backend2.summary_calls) == 1 and result2.summary["actions"][0]["qui"] == "ADP"
+
+
+def test_slides_reach_the_redaction_prompt(tmp_path):
+    slides = tmp_path / "slides.md"
+    slides.write_text("Fête de carnaval\n19/02/2027 – Salle Ginion", encoding="utf-8")
+    text, image_only = read_slides(str(slides))
+    assert "Salle Ginion" in text and image_only == []
+    assert read_slides("") == ("", [])
+
+    inputs = _inputs()
+    inputs.slides_text = text
+    backend = FakeBackend()
+    generate_pv(backend, inputs, {})
+    redact_prompts = [prompt for json_mode, prompt in backend.calls if not json_mode]
+    assert redact_prompts and all("Salle Ginion" in prompt for prompt in redact_prompts)
+
+
+def test_regeneration_keeps_images():
+    backend = FakeBackend()
+    previous = {"1.1": '<p>Ancien texte.</p>\n<p><img src="images/img_abc.png" width="300"></p>'}
+    result, _ = generate_pv(backend, _inputs(), {}, only_node="1.1", previous_bodies=previous)
+    assert result.bodies["1.1"] == '<p>Contenu rédigé.</p>\n<p><img src="images/img_abc.png" width="300"></p>'
+    blocks = parse_fragment(result.bodies["1.1"])
+    assert [b.kind for b in classify_blocks(blocks)] == ["text", "image"] and blocks[1].width == 300
+
+
+def test_generate_summary_only_keeps_bodies():
+    backend = FakeBackend()
+    bodies = {"1.1": "<p>Texte corrigé à la main.</p>"}
+    result, _ = generate_pv(backend, _inputs(), {}, only_node=SUMMARY_NODE, previous_bodies=bodies)
+    assert backend.calls == [] and result.bodies == bodies
+    assert "Texte corrigé à la main." in backend.summary_calls[0]
+    assert result.summary["points"][0]["sujet"] == "Chocolats"
+
+
+def test_parse_summary_tolerant_and_capped():
+    answer = (
+        "```json\n"
+        + json.dumps(
+            {"points": [{"sujet": "S", "texte": f"T{i}"} for i in range(20)] + [{"sujet": "vide"}], "actions": []}
+        )
+        + "\n```"
+    )
+    summary = parse_summary(answer)
+    assert len(summary["points"]) == pv_prompts.SUMMARY_MAX_POINTS and summary["actions"] == []
+    with pytest.raises(ValueError):
+        parse_summary('{"points": [], "actions": []}')
 
 
 def test_generate_pv_notes_only():
@@ -252,6 +321,40 @@ def test_parse_fragment_lists_and_inline():
         (0, "-> Relancer"),
     ]
     assert blocks[0].runs[0].bold and blocks[1].runs[1].italic
+
+
+def test_classify_blocks_roles():
+    blocks = classify_blocks(
+        parse_fragment(
+            "<ul><li><strong>Sujet</strong></li></ul><p>Texte.<br>-&gt; Relancer</p>"
+            "<p><strong>Réaction des parents :</strong></p><ul><li><strong>A</strong></li><li>B</li></ul>"
+            "<p>-&gt; Suite</p>"
+        )
+    )
+    assert [(b.kind, b.text.strip()) for b in blocks] == [
+        ("subtopic", "Sujet"),
+        ("text", "Texte."),
+        ("action", "-> Relancer"),
+        ("label", "Réaction des parents :"),
+        ("text", "A"),  # a bold item in a longer list is not a topic
+        ("text", "B"),
+        ("action", "-> Suite"),
+    ]
+
+
+def test_docx_export_roles(tmp_path):
+    import docx
+
+    roots = parse_agenda(AGENDA)
+    bodies = {"1.1": "<ul><li><strong>Cantine</strong></li></ul><p>Texte.</p><p>-&gt; Relancer M. B.</p>"}
+    document = docx.Document(export_docx(str(tmp_path / "pv.docx"), "PV Réunion du 24/11/2025", roots, bodies))
+    texts = [(p.style.name, p.text) for p in document.paragraphs]
+    assert ("PV Sujet", "Cantine") in texts
+    assert ("PV Suite", "→  Relancer M. B.") in texts
+    section = document.sections[0]
+    assert round(section.page_width.cm, 1) == 21.0
+    assert section.header.paragraphs[0].text == "PV Réunion du 24/11/2025"
+    assert "NUMPAGES" in section.footer._element.xml
 
 
 def test_preview_and_docx_export(tmp_path):
@@ -282,3 +385,18 @@ def test_meeting_roundtrip(tmp_path):
     assert loaded.pv_title == "PV Réunion des délégués du 24/11/2025"
     assert loaded.sources == ["recording.wav"] and loaded.agenda_text == AGENDA
     assert loaded.next_docx_name() == "pv_v1.docx"
+
+
+def test_docx_and_preview_summary(tmp_path):
+    import docx
+
+    roots = parse_agenda(AGENDA)
+    bodies = {"1.1": "<p>Texte.</p>"}
+    preview = render_preview_html("PV", roots, bodies, SUMMARY_ANSWER)
+    assert "Synthèse :" in preview and "Relancer les cellules" in preview
+    document = docx.Document(export_docx(str(tmp_path / "pv.docx"), "PV", roots, bodies, SUMMARY_ANSWER))
+    texts = [p.text for p in document.paragraphs]
+    assert "Synthèse :" in texts and "Chocolats : La vente a rapporté 651,91€." in texts
+    table = document.tables[0]
+    assert [c.text for c in table.rows[0].cells] == ["Action", "Qui", "Échéance"]
+    assert [c.text for c in table.rows[1].cells] == ["Relancer les cellules", "ADP", "–"]

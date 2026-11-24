@@ -5,6 +5,7 @@ Two system prompts are editable in Settings > Prompts (``prompt_extract`` and
 placeholders and on the JSON shape of the extraction answer.
 
 The style excerpt below is taken from the reference PVs with every person's name replaced.
+Its "Questions des parents" block was added to show that format.
 """
 
 # ── Stage A: extraction and classification ─────────────────────────────────
@@ -24,9 +25,12 @@ CE QU'IL FAUT GARDER (tout ce qui a de la substance) :
   arguments et contre-arguments ;
 - actions à mener, relances, suivis prévus (qui fait quoi, quand) ;
 - rappels de réunions ou décisions précédentes ;
-- remerciements adressés à des personnes ou à des équipes.
+- remerciements adressés à des personnes ou à des équipes, UNIQUEMENT si la raison du \
+  remerciement est connue : le texte du fait doit dire pour quoi on remercie.
 
 CE QU'IL FAUT IGNORER :
+- les remerciements de politesse ("merci, Greg", "merci beaucoup") qui ponctuent une \
+  intervention, et tout remerciement dont on ne sait pas à quoi il se rapporte ;
 - blagues, apartés, conversations privées, bavardages sans rapport avec l'ordre du jour ;
 - la logistique de la réunion elle-même ("tu m'entends ?", "on passe au point suivant", \
   "qui veut un café", retards, problèmes de micro) ;
@@ -101,10 +105,12 @@ dans le cadre des cours de français.</li></ul>
 remboursons sur base de la facture.</p>
 <p>Nous avons demandé aux personnes présentes de voter pour ou contre le financement de ces \
 projets. Les 2 ont été votés POUR à l'unanimité.</p>
-<p><strong>Réaction des parents :</strong></p>
-<ul><li>S'arrêter aux arceaux est difficile avec plusieurs enfants sur le vélo. Si la décision \
-est maintenue, il faudrait davantage d'arceaux sur le parvis.<ul><li>Mme A. a également \
-indiqué qu'elle avait prévu de demander plus d'arceaux.</li></ul></li></ul>
+<p>Certains parents font remarquer que s'arrêter aux arceaux est difficile avec plusieurs \
+enfants sur le vélo : si la décision est maintenue, il faudrait davantage d'arceaux sur le \
+parvis. Mme A. a indiqué qu'elle avait prévu d'en demander plus.</p>
+<p><strong>Questions des parents :</strong></p>
+<ul><li>Les panneaux seront-ils installés avant la rentrée ?<ul><li>M. B. ne s'est pas encore \
+engagé sur une date ; nous le relancerons.</li></ul></li></ul>
 <p>-&gt; Nous allons demander à Mme A. de faire un rappel dans son équipe.</p>
 """
 
@@ -118,7 +124,13 @@ SOURCES ET PRIORITÉS :
    reformulée en phrases correctes. En cas de contradiction avec la transcription, \
    la note l'emporte.
 2. Les FAITS EXTRAITS de la transcription complètent et précisent les notes.
-3. Le PV PRÉCÉDENT ne sert qu'à comprendre les "Pour rappel" et l'orthographe des noms : \
+3. Les SLIDES PROJETÉES pendant la réunion montrent ce qui a été présenté. Reprends-en, \
+   pour le point traité uniquement, les éléments utiles qui précisent ou complètent la \
+   discussion : dates, montants, lieux, listes (programme, missions, réunions prévues), \
+   orthographe des noms. Intègre-les au texte (une courte liste est permise) sans recopier \
+   les slides de titre, de transition ou de remerciement, et sans les citer comme source \
+   ("selon la slide"). Si la discussion contredit une slide, la discussion l'emporte.
+4. Le PV PRÉCÉDENT ne sert qu'à comprendre les "Pour rappel" et l'orthographe des noms : \
    ne le résume jamais.
 
 VOIX ET TON (comme dans les PV de référence) :
@@ -129,10 +141,27 @@ VOIX ET TON (comme dans les PV de référence) :
 - Registre soigné mais naturel, phrases simples, présent et futur. Pas de jargon \
   administratif, pas de formules creuses, pas de conclusion ni de résumé final.
 - Tournures habituelles : "Pour rappel, …", "Pour information, …", \
-  "<strong>Réaction des parents :</strong>", "<strong>Réponse de … :</strong>", et les \
-  suites à donner sur une ligne qui commence par "-&gt; ".
-- Les votes sont mentionnés explicitement avec leur résultat. Les remerciements sont \
-  conservés.
+  "<strong>Réponse de … :</strong>", et les suites à donner sur une ligne qui commence \
+  par "-&gt; ".
+- Les votes sont mentionnés explicitement avec leur résultat. Un remerciement n'est \
+  conservé que si sa raison est connue, et il est formulé avec elle ("Merci aux parents \
+  qui ont participé à la vente"). Jamais de "Nous remercions X." seul.
+- Chaque information n'apparaît qu'UNE fois dans le point : ne répète pas un fait déjà \
+  dit, regroupe ce qui porte sur le même sujet.
+- Chaque phrase doit se comprendre seule par quelqu'un d'absent : précise de quoi, de qui \
+  et de quel événement on parle (ex. "la manifestation organisée par des parents lors du \
+  conseil communal", pas "la manifestation").
+
+QUESTIONS ET RÉACTIONS :
+- "<strong>Questions des parents :</strong>" : uniquement pour de vraies questions qui \
+  ont reçu une réponse ; la question en puce, la réponse en sous-puce.
+- "<strong>Réaction des parents :</strong>" : uniquement s'il y a au moins DEUX remarques \
+  sur la même annonce. Une remarque isolée, ou une question isolée et sa réponse, s'écrit \
+  en phrase dans le paragraphe ("Un parent estime toutefois que…").
+- Toujours ces deux intitulés exacts, jamais de variante ("Question des parents", \
+  "Remarques", …).
+- Si une remarque a eu une suite (réponse, décision, action), écris-la juste après \
+  ("-&gt; …"). Une opinion isolée sans suite ni information nouvelle n'est pas reprise.
 
 FIDÉLITÉ :
 - N'invente RIEN : aucun nom, chiffre, date ou décision absent des sources.
@@ -146,8 +175,8 @@ STRUCTURE :
 - N'écris PAS le titre du point : il est ajouté automatiquement.
 - Si le point contient plusieurs sujets distincts, commence chacun par une puce en gras \
   (<ul><li><strong>Sujet</strong></li></ul>) suivie de paragraphes <p>.
-- Utilise des listes <ul><li> pour les énumérations, les réactions et les \
-  questions/réponses ; deux niveaux d'imbrication maximum.
+- Utilise des listes <ul><li> pour les énumérations et pour les blocs de questions et de \
+  réactions décrits ci-dessus ; deux niveaux d'imbrication maximum.
 - Si des SOUS-POINTS sont listés, n'écris pas leur contenu : ils sont rédigés séparément. \
   Écris seulement l'introduction ou le contenu général du point.
 - Longueur proportionnée à la matière : tout ce qui est substantiel, rien de plus.
@@ -175,10 +204,54 @@ FAITS EXTRAITS DE LA TRANSCRIPTION POUR CE POINT :
 GLOSSAIRE (orthographe de référence) :
 {glossaire}
 
+SLIDES PROJETÉES PENDANT LA RÉUNION (toute la présentation, ne garder que ce qui concerne ce point) :
+{slides}
+
 PV PRÉCÉDENT (contexte uniquement, ne pas résumer) :
 {pv_precedent}
 
 Rédige maintenant le contenu de ce point.
+"""
+
+
+# ── Stage D: one-page summary and action list ──────────────────────────────
+
+SUMMARY_MAX_POINTS = 8
+SUMMARY_MAX_ACTIONS = 12
+
+SUMMARY_SYSTEM = f"""\
+Tu es le secrétaire de séance. Tu reçois le procès-verbal (PV) complet d'une réunion, déjà \
+rédigé. Tu écris la SYNTHÈSE placée en tête du PV, pour un lecteur pressé. Elle doit tenir \
+sur UNE page A4 au total.
+
+1. "points" : les points principaux de la réunion, au plus {SUMMARY_MAX_POINTS}, dans l'ordre \
+du PV. Chacun a un "sujet" (2 à 5 mots) et un "texte" d'UNE phrase de 35 mots maximum qui \
+donne l'essentiel : décision, chiffre clé, date, enjeu. Regroupe les petits sujets, ignore \
+les détails, les rappels et les anecdotes.
+2. "actions" : les actions, tâches, demandes et relances décidées ou soulevées, au plus \
+{SUMMARY_MAX_ACTIONS}, les plus importantes d'abord. Pour chacune :
+   - "action" : verbe à l'infinitif, 20 mots maximum, compréhensible seul \
+     ("Envoyer nos questions au PO avant la réunion du 3 décembre") ;
+   - "qui" : la personne ou le groupe chargé de l'action, tel qu'il est écrit dans le PV \
+     ("Nous" devient le nom de l'organisation qui rédige le PV) ; chaîne vide si inconnu ;
+   - "echeance" : la date ou le moment s'il est écrit dans le PV, sinon chaîne vide.
+
+FIDÉLITÉ : n'invente rien, ne déduis ni responsable ni date. Recopie exactement les \
+chiffres et les dates. Français correct, registre du PV.
+
+FORMAT DE RÉPONSE : uniquement un objet JSON valide, sans texte autour :
+{{"points": [{{"sujet": "…", "texte": "…"}}], \
+"actions": [{{"action": "…", "qui": "…", "echeance": "…"}}]}}
+"""
+
+SUMMARY_USER = """\
+RÉUNION : {titre} du {date}
+ORGANISATION QUI RÉDIGE LE PV ("nous") : {organisation}
+
+PV À SYNTHÉTISER :
+---
+{pv}
+---
 """
 
 
