@@ -121,7 +121,16 @@ def main():
     window = MainWindow()
     window.show()
     QTimer.singleShot(0, window.check_first_run)
-    sys.exit(app.exec())
+    code = app.exec()
+
+    from src.audio_recorder import AudioRecorder
+
+    if AudioRecorder.stream_stuck:
+        # A deadlocked PortAudio stream would also hang sounddevice's atexit Pa_Terminate
+        log.warning("Audio stream left deadlocked, exiting without PortAudio cleanup")
+        logging.shutdown()
+        os._exit(code)
+    sys.exit(code)
 
 
 if __name__ == "__main__":
